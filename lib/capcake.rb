@@ -30,7 +30,7 @@ Capistrano::Configuration.instance(:must_exist).load do
 
   set :cake2,                 true
   set :scm,                   :git
-  set :git_enable_submodules, 1
+  set :git_enable_submodules, false
   set :deploy_via,            :checkout
 
   set :git_flag_quiet,        ""
@@ -44,19 +44,25 @@ Capistrano::Configuration.instance(:must_exist).load do
   def capcake()
     set :deploy_to,           "/var/www/#{application}" if (deploy_to.empty?)
     set(:current_path)        { File.join(deploy_to, current_dir) }
-    if cake2
-      set :shared_children,       %w(Config System tmp)
-      set :database_partial_path, "Config/database.php"
-    else
-      set :shared_children,       %w(config system tmp)
-      set :database_partial_path, "config/database.php"
-    end
+    
+    _cset(:application_dir)   { "app" }
+    _cset(:webroot_dir)       { "webroot" }
+    _cset(:assets_dir)        { "assets" }
+    _cset(:cake_dir)      		{ "cakephp" }
+
     set(:database_path)       { File.join(shared_path, database_partial_path) }
     set(:shared_path)         { File.join(deploy_to, shared_dir) }
-    _cset(:cake_path)         { shared_path }
-    _cset(:tmp_path)          { File.join(shared_path, "tmp") }
-    _cset(:cache_path)        { File.join(tmp_path, "cache") }
-    _cset(:logs_path)         { File.join(tmp_path, "logs") }
+    set(:cake_path)         	{ shared_path }
+
+    set(:tmp_path)          { File.join(shared_path, "tmp") }
+    set(:assets_path)       { File.join(shared_path, assets_dir) }
+    set(:cache_path)        { File.join(tmp_path, "cache") }
+    set(:logs_path)         { File.join(tmp_path, "logs") }
+
+    
+    set :shared_children,       ["Config", "tmp", assets_dir]
+		set :database_partial_path, "Config/database.php"
+    
 
   end
 
@@ -98,7 +104,7 @@ Capistrano::Configuration.instance(:must_exist).load do
       will not destroy any deployed revisions or data.
     DESC
     task :setup, :except => { :no_release => true } do
-      dirs = [deploy_to, releases_path, shared_path]
+    	dirs = [deploy_to, releases_path, shared_path]
       dirs += shared_children.map { |d| File.join(shared_path, d) }
       tmp_dirs = tmp_children.map { |d| File.join(tmp_path, d) }
       tmp_dirs += cache_children.map { |d| File.join(cache_path, d) }
@@ -118,9 +124,9 @@ Capistrano::Configuration.instance(:must_exist).load do
     DESC
     task :update do
       transaction do
-        update_code
-        symlink
-	cake.cache.clear
+				update_code
+				symlink
+				cake.cache.clear
       end
     end
 
@@ -153,8 +159,8 @@ Capistrano::Configuration.instance(:must_exist).load do
     desc <<-DESC
       Updates the symlinks to the most recently deployed version. Capistrano works \
       by putting each new release of your application in its own directory. When \
-      you deploy a new version, this task's job is to update the `current`, \
-      `current/tmp`, `current/webroot/system` symlinks to point at the new version. \
+      you deploy a new version, this task's job is to update the symlinks to point \
+      at the new version. \
       
       You will rarely need to call this task directly; instead, use the `deploy` \
       task (which performs a complete deploy, including `restart`) or the 'update` \
@@ -168,8 +174,13 @@ Capistrano::Configuration.instance(:must_exist).load do
           logger.important "no previous release to rollback to, rollback of symlink skipped"
         end
       end
-      run "rm -rf #{latest_release}/tmp" if (!remote_file_exists?("#{latest_release}/tmp/empty"))
-      run "ln -s #{shared_path}/system #{latest_release}/webroot/system && ln -s #{shared_path}/tmp #{latest_release}/tmp";
+      run "rm -rf #{latest_release}/#{application_dir}/tmp" if (remote_file_exists?("#{latest_release}/#{application_dir}/tmp"))
+      run "ln -s #{tmp_path} #{latest_release}/#{application_dir}/tmp"
+      
+      run "rm -rf #{latest_release}/#{cake_dir}" if (remote_file_exists?("#{latest_release}/#{cake_dir}"))
+      run "ln -s #{shared_path}/#{cake_dir} #{latest_release}/#{cake_dir}"
+      
+      run "ln -s #{assets_path} #{latest_release}/#{assets_dir}"
       run "rm -f #{current_path} && ln -s #{latest_release} #{current_path}"
       cake.database.symlink if (remote_file_exists?(database_path))
     end
@@ -198,6 +209,14 @@ Capistrano::Configuration.instance(:must_exist).load do
 
       files.each { |file| top.upload(file, File.join(current_path, file)) }
     end
+    
+		desc <<-DESC
+			Copies your assets_dir over to the server\
+			Issued manually.
+		DESC
+		task :assets do
+			top.upload("#{assets_dir}", "#{shared_path}", :via  => :scp, :recursive => true)
+		end
 
     namespace :rollback do
       desc <<-DESC
@@ -355,17 +374,17 @@ Capistrano::Configuration.instance(:must_exist).load do
       DESC
       task :disable, :roles => :web, :except => { :no_release => true } do
         require 'erb'
-        on_rollback { run "rm #{shared_path}/system/maintenance.html" }
+        on_rollback { run "rm #{deploy_to}/#{webroot_dir}/maintenance.html" }
 
         warn <<-EOHTACCESS
 
           # Please add something like this to your site's htaccess to redirect users to the maintenance page.
           # More Info: http://www.shiftcommathree.com/articles/make-your-rails-maintenance-page-respond-with-a-503
 
-          ErrorDocument 503 /system/maintenance.html
+          ErrorDocument 503 maintenance.html
           RewriteEngine On
           RewriteCond %{REQUEST_URI} !\.(css|gif|jpg|png)$
-          RewriteCond %{DOCUMENT_ROOT}/system/maintenance.html -f
+          RewriteCond %{DOCUMENT_ROOT}/maintenance.html -f
           RewriteCond %{SCRIPT_FILENAME} !maintenance.html
           RewriteRule ^.*$  -  [redirect=503,last]
         EOHTACCESS
@@ -376,7 +395,7 @@ Capistrano::Configuration.instance(:must_exist).load do
         template = File.read(File.join(File.dirname(__FILE__), "templates", "maintenance.rhtml"))
         result = ERB.new(template).result(binding)
 
-        put(result, "#{shared_path}/system/maintenance.html", :mode => 0644, :via => :scp)
+        put(result, "#{deploy_to}/#{webroot_dir}/maintenance.html", :mode => 0644, :via => :scp)
       end
 
       desc <<-DESC
@@ -386,7 +405,7 @@ Capistrano::Configuration.instance(:must_exist).load do
         web-accessible again.
       DESC
       task :enable, :roles => :web, :except => { :no_release => true } do
-        run "rm #{shared_path}/system/maintenance.html"
+        run "rm #{deploy_to}/#{webroot_dir}/maintenance.html"
       end
     end
 
@@ -422,8 +441,9 @@ Capistrano::Configuration.instance(:must_exist).load do
     DESC
     desc "Prepares server for deployment of a CakePHP application"
     task :setup do
-      run "cd #{cake_path} && git clone --depth 1 #{cake_repo} cakephp"
-      set :git_flag_quiet, "-q "
+      run "git clone --depth 1 #{cake_repo} #{cake_path}/#{cake_dir}"
+			set :git_flag_quiet, "-q "
+			run "cd #{cake_path}/cakephp && git config core.sparsecheckout true && echo 'lib/Cake/' > #{cake_path}/cakephp/.git/info/sparse-checkout && git read-tree -m -u HEAD" 
       update
     end
     desc <<-DESC
@@ -498,7 +518,7 @@ Capistrano::Configuration.instance(:must_exist).load do
         result = ERB.new(template).result(binding)
 
         put(result, "#{database_path}", :mode => 0644, :via => :scp)
-        after("deploy:symlink", "cake:database:symlink")
+        after("deploy:create_symlink", "cake:database:symlink")
       end
       desc <<-DESC
         Creates MySQL database, database user and grants permissions on DB servers
@@ -538,7 +558,7 @@ Capistrano::Configuration.instance(:must_exist).load do
         #{deploy_to}/shared/config/database.php
       DESC
       task :symlink, :roles => :web, :except => { :no_release => true } do
-        run "#{try_sudo} rm -f #{current_path}/#{database_partial_path} && #{try_sudo} ln -s #{database_path} #{current_path}/#{database_partial_path}"
+        run "#{try_sudo} rm -f #{current_path}/#{application_dir}/#{database_partial_path} && #{try_sudo} ln -s #{database_path} #{current_path}/#{application_dir}/#{database_partial_path}"
       end
     end
 
@@ -568,7 +588,5 @@ Capistrano::Configuration.instance(:must_exist).load do
         stream "#{try_sudo} tail -f #{files.join(' ')}"
       end
     end
-
   end
-
 end # Capistrano::Configuration.instance(:must_exist).load do
