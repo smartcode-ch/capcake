@@ -5,7 +5,7 @@
 
 <head>
   <meta http-equiv="content-type" content="text/html;charset=UTF-8" />
-  <title>System down for maintenance</title>
+  <title>System down for upgrade</title>
 
   <style type="text/css">
     div.outer {
@@ -38,7 +38,7 @@
      <div class="DialogBody" style="text-align: center;">
        <div style="text-align: center; width: 200px; margin: 0 auto;">
          <p style="color: red; font-size: 16px; line-height: 20px;">
-           The system is down for <%= reason ? reason : "maintenance" %>
+           The system is down for a scheduled <%= reason ? reason : "upgrade" %>
            as of <%= Time.now.strftime("%H:%M %Z") %>.
          </p>
          <p style="color: #666;">
